@@ -121,7 +121,7 @@ public:
     IFACEMETHODIMP SetSelection(IShellItemArray *psia)
     {
         HRESULT hr = SetInterface(&_psia, psia);
-        setSelection_succeeded = SUCCEEDED(hr);
+        files_selected = SUCCEEDED(hr);
         return S_OK;
     }
 
@@ -132,8 +132,9 @@ public:
     }
 
     // IInitializeCommand
-    IFACEMETHODIMP Initialize(PCWSTR /* pszCommandName */, IPropertyBag * /* ppb */)
+    IFACEMETHODIMP Initialize(PCWSTR pszCommandName, IPropertyBag * /* ppb */)
     {
+        pszCommandName_field = pszCommandName;
         // The verb name is in pszCommandName, this handler can varry its behavior
         // based on the command name (implementing different verbs) or the
         // data stored under that verb in the registry can be read via ppb
@@ -158,88 +159,99 @@ public:
         WCHAR uuid_wide[50];
         size_t converted;
         mbstowcs_s(&converted, uuid_wide, MYUUID, sizeof(MYUUID));
-
-        bool is_debug = pszCmdLine_field[0] == '-' || pszCmdLine_field[0] == 'd';//only "-Embedding" or "d" --> debug
-        if (!setSelection_succeeded) {//directory mode
-            if (is_debug) {
-                MessageBox(NULL, pszName0, uuid_wide, MB_OK | MB_SETFOREGROUND);
+        DWORD count=0;
+        if (files_selected) _psia->GetCount(&count);
+        CComPtr<IShellItem2> psi;
+        PWSTR pszName = pszName0;
+        bool is_debug = pszCmdLine_field[0] == '-';//"-Embedding"
+        if (is_debug) {
+            if (!files_selected) {//directory mode
+                std::wstring msg = L"Verb name: " + pszCommandName_field + L"\nDirectory: " + pszName0;
+                MessageBox(NULL, msg.c_str(), uuid_wide, MB_OK | MB_SETFOREGROUND);
             }
             else {
-                run_cmd_pipe([this](HANDLE stdIn) {
-                    DWORD written = 0;
-                    WideCharToMultiByte(CP_UTF8, 0, pszName0, -1, mbfile, MAX_PATH_CHARS * 4, NULL, NULL);//to UTF-8
-                    WriteFile(stdIn, mbfile,(DWORD) strlen(mbfile), &written, NULL);
-                    WriteFile(stdIn, L"\n", 1, &written, NULL);//newline
-                });
+                GetItemAt(_psia, 0, IID_PPV_ARGS(&psi));//the first item
+                psi->GetDisplayName(SIGDN_FILESYSPATH, &pszName);
+
+                CComPtr<IShellItem2> psi2;
+                WCHAR* pszName2 = new WCHAR[MAX_PATH_CHARS];
+                GetItemAt(_psia, count - 1, IID_PPV_ARGS(&psi2));//the last item
+                psi2->GetDisplayName(SIGDN_FILESYSPATH, &pszName2);
+
+                WCHAR* szMsg = new WCHAR[MAX_PATH_CHARS * 2 + 400];
+                std::wstring msg = L"Verb name: " + pszCommandName_field + L"\nItems: " + std::to_wstring(count) + L"\nFirst item: " + pszName + L"\nLast item: " + pszName2;
+                MessageBox(NULL, msg.c_str(), uuid_wide, MB_OK | MB_SETFOREGROUND);
+                delete[] pszName2;
+                delete[] szMsg;
             }
             return;
         }
-        DWORD count;
-        _psia->GetCount(&count);
-        CComPtr<IShellItem2> psi;
+        pszCmdLine_field[wcslen(pszCmdLine_field) - 11] = 0;//ignore " -Embedding"
+        bool hidden = pszCmdLine_field[1] == L'h';
+        std::wstring ws = pszCmdLine_field + (hidden ? 3 : 2);//remove options at the beginning
+        size_t pref_pos = ws.find(L' ');
+        if (pref_pos == std::wstring::npos) return;//fatal (no prefix)
+        std::wstring pref = ws.substr(0, pref_pos);//the prefix, like "$$"
+        ws.erase(0, pref_pos + 1); //remove "$$ " at the beginning
 
-        PWSTR pszName = pszName0;
-        //HRESULT hr ;
-        //HRESULT hr2;
-        if (is_debug) {
-            //debug; show dialog
-            GetItemAt(_psia, 0, IID_PPV_ARGS(&psi));//the first item
-            psi->GetDisplayName(SIGDN_FILESYSPATH, &pszName);
-
-            CComPtr<IShellItem2> psi2;
-            WCHAR* pszName2 = new WCHAR[MAX_PATH_CHARS];
-            GetItemAt(_psia, count - 1, IID_PPV_ARGS(&psi2));//the last item
-            psi2->GetDisplayName(SIGDN_FILESYSPATH, &pszName2);
-
-            WCHAR* szMsg = new WCHAR[MAX_PATH_CHARS * 2 + 400];
-            StringCchPrintf(szMsg, MAX_PATH_CHARS * 2 + 400, L"arg:[%s], %d item(s), first item: [%s], last item: [%s]", pszCmdLine_field, count, pszName, pszName2);
-            MessageBox(NULL, szMsg, uuid_wide, MB_OK | MB_SETFOREGROUND);
-            delete[] pszName2;
-            delete[] szMsg;
-
+        auto verb_len = pszCommandName_field.size();
+        //create file list string
+        std::wstring files = L"";
+        if (!files_selected) {//directory background
+            files = files + L"\"" + pszName0 + L"\"";
         }
-        else {//command specified
-            pszCmdLine_field[wcslen(pszCmdLine_field) - 11] = 0;//ignore " -Embedding"
-
-            if (pszCmdLine_field[0] == 'a') {//"ExecuteCommand.exe a xxxxx somecommand -some-arg xxxxx
-                std::wstring args=L"";
-                for (DWORD i = 0; i < count; i++) {
-                    GetItemAt(_psia, i, IID_PPV_ARGS(&psi));
-                    psi->GetDisplayName(SIGDN_FILESYSPATH, &pszName);
-                    args = args+L"\"" + pszName + L"\" ";
-                }
-                args.pop_back();//remove the trailing space
-                auto arglen = args.length();
-                std::wstring ws = pszCmdLine_field+2;//remove "a " at the beginning
-
-                size_t pos = ws.find(L' ');
-                if (pos == std::wstring::npos) return;
-
-                std::wstring x = ws.substr(0, pos);//xxxxx
-                ws.erase(0, pos + 1); //remove "xxxxx " at the beginning
-
-                //replace all "xxxxx"s in ws
-                std::wstring::size_type i = 0;
-                while (1) {
-                    i = ws.find(x, i);
-                    if (i == std::wstring::npos) break;
-                    ws.replace(i, x.size(), args);
-                    i += arglen;
-                }
-                WCHAR* wchar = new WCHAR[ws.size() + 1]; // +1 for the null-terminator
-                std::copy(ws.begin(), ws.end(), wchar);
-                wchar[ws.size()] = L'\0';
-
-                STARTUPINFO si = { sizeof(STARTUPINFO) };
-                PROCESS_INFORMATION pi;
-                si.dwFlags = STARTF_USESHOWWINDOW;
-                si.wShowWindow = TRUE;
-                CreateProcess(NULL, wchar, NULL, NULL, FALSE, (x[0] == L'h') ? CREATE_NO_WINDOW : 0, NULL, NULL, &si, &pi);
-                CloseHandle(pi.hProcess);
-                CloseHandle(pi.hThread);
-                return;
+        else {
+            for (DWORD i = 0; i < count; i++) {
+                GetItemAt(_psia, i, IID_PPV_ARGS(&psi));
+                psi->GetDisplayName(SIGDN_FILESYSPATH, &pszName);
+                files = files + L"\"" + pszName + L"\" ";
             }
-            run_cmd_pipe([count, this, &pszName, &psi](HANDLE stdIn) {
+            files.pop_back();//remove the trailing space
+        }
+        auto files_len = files.length();
+
+        //replace prefixed strings in ws
+        std::wstring::size_type i = 0;
+        while (1) {
+            i = ws.find(pref, i);
+            if (i == std::wstring::npos) break;
+            if (ws[i + pref.size()] == L'v') {
+                ws.replace(i, pref.size() + 1, pszCommandName_field);
+                i += verb_len;
+            }
+            else if (ws[i + pref.size()] == L'f') {
+                ws.replace(i, pref.size() + 1, files);
+                i += files_len;
+            }
+            else {//skip
+                i += pref.size();
+            }
+        }
+        WCHAR* wchar = new WCHAR[ws.size() + 1]; // +1 for the null-terminator
+        std::copy(ws.begin(), ws.end(), wchar);
+        wchar[ws.size()] = L'\0';
+
+        if (pszCmdLine_field[0] == 'a') {//argument mode
+            STARTUPINFO si = { sizeof(STARTUPINFO) };
+            PROCESS_INFORMATION pi;
+            si.dwFlags = STARTF_USESHOWWINDOW;
+            si.wShowWindow = TRUE;
+            CreateProcess(NULL, wchar, NULL, NULL, FALSE, hidden ? CREATE_NO_WINDOW : 0, NULL, NULL, &si, &pi);
+            CloseHandle(pi.hProcess);
+            CloseHandle(pi.hThread);
+            return;
+        }
+        //pipe mode
+        if (!files_selected) {//directory background
+            run_cmd_pipe(wchar, hidden, [this](HANDLE stdIn) {
+                DWORD written = 0;
+                WideCharToMultiByte(CP_UTF8, 0, pszName0, -1, mbfile, MAX_PATH_CHARS * 4, NULL, NULL);//to UTF-8
+                WriteFile(stdIn, mbfile, (DWORD)strlen(mbfile), &written, NULL);
+                WriteFile(stdIn, L"\n", 1, &written, NULL);//newline
+                });
+        }
+        else {
+            run_cmd_pipe(wchar, hidden, [count, this, &pszName, &psi](HANDLE stdIn) {
                 DWORD written = 0;
                 for (DWORD i = 0; i < count; i++) {
                     GetItemAt(_psia, i, IID_PPV_ARGS(&psi));
@@ -248,11 +260,10 @@ public:
                     WriteFile(stdIn, mbfile, (DWORD)strlen(mbfile), &written, NULL);
                     WriteFile(stdIn, L"\n", 1, &written, NULL);//newline
                 }
-            });
-
+                });
         }
     }
-    void run_cmd_pipe(std::function<void(HANDLE)> writer_func) {
+    void run_cmd_pipe(WCHAR* cmdline, bool hidden, std::function<void(HANDLE)> writer_func) {
 
         //create pipe
         HANDLE hPipe1[2];
@@ -269,12 +280,12 @@ public:
         si.hStdInput = hChildRead;
         si.hStdOutput = GetStdHandle(STD_OUTPUT_HANDLE);
         si.hStdError = GetStdHandle(STD_ERROR_HANDLE);
-        //if (pszCmdLine_field[0] == 'h') si.wShowWindow = SW_HIDE; // hide window
+        //if (hidden) si.wShowWindow = SW_HIDE; // hide window
 
         PROCESS_INFORMATION pi;
         ZeroMemory(&pi, sizeof(pi));
         //ignore first 2 chars & optionally hide window
-        CreateProcess(NULL, &pszCmdLine_field[2], NULL, NULL, TRUE, (pszCmdLine_field[0] == L'h') ? CREATE_NO_WINDOW : 0, NULL, NULL, &si, &pi);
+        CreateProcess(NULL, cmdline, NULL, NULL, TRUE, hidden ? CREATE_NO_WINDOW : 0, NULL, NULL, &si, &pi);
         CloseHandle(pi.hProcess);
         CloseHandle(pi.hThread);
         CloseHandle(hChildRead);
@@ -288,7 +299,8 @@ private:
     ~CExecuteCommandVerb()
     {
     }
-    WCHAR* pszCmdLine_field;
+    PWSTR pszCmdLine_field;
+    std::wstring pszCommandName_field;
     long _cRef;
     CComPtr<IShellItemArray> _psia;
     CComPtr<IUnknown> _punkSite;
@@ -299,7 +311,7 @@ private:
 
     CHAR mbfile[MAX_PATH_CHARS * 4];
     WCHAR pszName0[MAX_PATH_CHARS];
-    bool setSelection_succeeded = false;
+    bool files_selected = false;
 };
 
 // this is called to invoke the verb but this call must not block the caller. to accomidate that
