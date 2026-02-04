@@ -2,6 +2,7 @@
 A simple tool to run arbitrary commands with paths (of files or directories) passed from various context menus in Windows Explorer. Paths can be passed to the commands either as arguments or through stdin/stdout (pipe).
 Implemented with COM (Component Object Model) technology to avoid limitations for path length or number of files.
 
+- This tool is named "ExecuteCommand-Pipe" only because it previously provided "pipe mode" only. It may be renamed in future.
 # Usage
 
 ## (If you use Windows 11 and don't want to press Shift or click "Show More Options" everytime) Revert to old context menu
@@ -114,3 +115,4 @@ Use Visual Studio or MSBuild.exe. `build.sh` generates multiple exe files with d
 # License
 - MIT (inherited from [the original Microsoft sample](https://github.com/microsoft/Windows-classic-samples/tree/main/Samples/Win7Samples/winui/shell/appshellintegration/ExecuteCommandVerb))
 - public domain for my revision
+
